@@ -1,8 +1,8 @@
 export const BRAND = {
   name: "JAN'S Frozen Food",
   tagline: "Tastes Like Fresh. Always.",
-  whatsapp: "923000000000", // TODO: replace with company number (intl. format, no +)
-  phone: "+92 300 000 0000",
+  whatsapp: "923349203000", // TODO: replace with company number (intl. format, no +)
+  phone: "+923349203000",
   email: "orders@jansfrozenfood.com",
   address: "Industrial Area, Lahore, Pakistan",
   social: {
