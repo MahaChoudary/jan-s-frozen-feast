@@ -1,62 +1,71 @@
-let serverHandler: any;
+import { readFileSync, existsSync } from "fs";
+import { join } from "path";
 
-async function getServerHandler() {
-  if (serverHandler) return serverHandler;
+const distPath = join(process.cwd(), "dist/server");
+let htmlContent = "";
 
+// Load HTML once
+function loadHTML() {
   try {
-    // @ts-expect-error - built at runtime
-    const mod = await import("../dist/server/index.js");
-    serverHandler = mod.default;
-    return serverHandler;
-  } catch (error) {
-    console.error("[Server] Failed to load:", error instanceof Error ? error.message : error);
-    return null;
+    const htmlFile = join(distPath, "index.html");
+    if (existsSync(htmlFile)) {
+      htmlContent = readFileSync(htmlFile, "utf-8");
+      return true;
+    }
+  } catch (e) {
+    console.error("Cannot load HTML:", e);
   }
+  return false;
 }
 
 export default async function handler(req: any, res: any) {
   try {
-    const url = new URL(
-      `${req.headers["x-forwarded-proto"] || "http"}://${req.headers.host || "localhost"}${req.url || "/"}`
-    );
-
-    const request = new Request(url, {
-      method: req.method || "GET",
-      headers: new Headers(
-        Object.fromEntries(
-          Object.entries(req.headers).map(([k, v]: [string, any]) => [
-            k,
-            typeof v === "string" ? v : Array.isArray(v) ? v.join(",") : String(v),
-          ])
-        )
-      ),
-      body: ["GET", "HEAD"].includes(req.method || "GET")
-        ? undefined
-        : req.body
-          ? typeof req.body === "string"
-            ? req.body
-            : JSON.stringify(req.body)
-          : undefined,
-    });
-
-    const serverHandler = await getServerHandler();
-
-    if (!serverHandler) {
-      res.status(503).json({ error: "Service unavailable - server handler not loaded" });
-      return;
+    // Load HTML on first request
+    if (!htmlContent) {
+      if (!loadHTML()) {
+        res.status(500).json({ error: "Application not ready" });
+        return;
+      }
     }
 
-    const response = await serverHandler.fetch(request, {}, {});
+    const path = req.url || "/";
 
-    res.status(response.status);
-    response.headers.forEach((v: string, k: string) => res.setHeader(k, v));
+    // Serve assets
+    if (path.startsWith("/assets/")) {
+      try {
+        const filePath = join(distPath, path);
+        const content = readFileSync(filePath);
 
-    const body = await response.arrayBuffer();
-    res.send(Buffer.from(body));
+        // Set cache headers for assets
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+
+        if (path.endsWith(".js")) {
+          res.setHeader("Content-Type", "application/javascript");
+        } else if (path.endsWith(".css")) {
+          res.setHeader("Content-Type", "text/css");
+        } else if (path.endsWith(".png")) {
+          res.setHeader("Content-Type", "image/png");
+        } else if (path.endsWith(".jpg") || path.endsWith(".jpeg")) {
+          res.setHeader("Content-Type", "image/jpeg");
+        } else if (path.endsWith(".svg")) {
+          res.setHeader("Content-Type", "image/svg+xml");
+        } else if (path.endsWith(".woff2")) {
+          res.setHeader("Content-Type", "font/woff2");
+        }
+
+        res.send(content);
+        return;
+      } catch (e) {
+        // Not found, continue
+      }
+    }
+
+    // Serve HTML for all other routes (SPA)
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=0, must-revalidate");
+    res.send(htmlContent);
   } catch (error) {
-    res.status(500).json({
-      error: "Internal error",
-      message: error instanceof Error ? error.message : String(error),
-    });
+    console.error("Error:", error);
+    res.status(500).json({ error: "Server error" });
   }
 }
