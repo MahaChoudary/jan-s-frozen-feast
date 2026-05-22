@@ -3,19 +3,10 @@
 //   - tanstackStart, viteReact, tailwindcss, tsConfigPaths,
 //     componentTagger (dev-only), VITE_* env injection, @ path alias, React/TanStack dedupe,
 //     error logger plugins, and sandbox detection (port/host/strictPort).
-// You can pass additional config via defineConfig({ vite: { ... } }) if needed.
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 
-// Configure for Vercel Node.js serverless deployment
 export default defineConfig({
   tanstackStart: {
     server: { entry: "server" },
-  },
-  vite: {
-    // Output for Node.js runtime (Vercel uses Node.js 20.x)
-    ssr: {
-      target: "node",
-      noExternal: [],
-    },
   },
 });

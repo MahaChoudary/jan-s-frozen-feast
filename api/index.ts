@@ -1,81 +1,92 @@
-import type { VercelRequest, VercelResponse } from "@vercel/node";
-import path from "path";
+// Vercel Serverless Function Handler
+let serverHandler: any;
 
-let serverEntry: any;
+async function loadHandler() {
+  if (serverHandler) return serverHandler;
 
-async function loadServerEntry() {
-  if (serverEntry) return serverEntry;
   try {
-    // Try multiple possible paths for the server entry
-    const possiblePaths = [
-      "../dist/server/index.js",
-      "./dist/server/index.js",
-      "/var/task/dist/server/index.js",
-      path.join(process.cwd(), "dist/server/index.js"),
-    ];
+    console.log('[Server] Loading handler...');
+    console.log('[Server] CWD:', process.cwd());
 
-    let entry;
-    let lastError: Error | null = null;
-
-    for (const tryPath of possiblePaths) {
-      try {
-        console.log(`[Server] Trying to load from: ${tryPath}`);
-        entry = await import(tryPath);
-        serverEntry = entry.default || entry;
-        console.log(`[Server] Successfully loaded from: ${tryPath}`);
-        return serverEntry;
-      } catch (e) {
-        lastError = e as Error;
-        console.log(`[Server] Failed to load from ${tryPath}: ${(e as Error).message}`);
-      }
+    // Try to load from built dist
+    try {
+      // @ts-expect-error - dist folder created at build time
+      const handler = await import('./dist/server/index.js');
+      serverHandler = handler.default;
+      console.log('[Server] Loaded from relative dist/server/index.js');
+      return serverHandler;
+    } catch (e) {
+      console.log('[Server] Failed to load from relative path:', e);
     }
 
-    throw new Error(`Could not load server entry from any path. Last error: ${lastError?.message}`);
-  } catch (e) {
-    console.error("Failed to load server entry:", e);
-    throw e;
+    // Fallback: load from absolute path that Vercel uses
+    try {
+      // @ts-expect-error - dist folder created at build time
+      const handler = await import('/var/task/dist/server/index.js');
+      serverHandler = handler.default;
+      console.log('[Server] Loaded from /var/task/dist/server/index.js');
+      return serverHandler;
+    } catch (e) {
+      console.log('[Server] Failed to load from /var/task:', e);
+    }
+
+    // Final fallback: load from built-in TanStack
+    const handler = await import('@tanstack/react-start/server-entry');
+    serverHandler = handler.default || handler;
+    console.log('[Server] Loaded from @tanstack/react-start');
+    return serverHandler;
+  } catch (error) {
+    console.error('[Server] All import attempts failed:', error);
+    throw error;
   }
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default async function handler(req: any, res: any) {
   try {
-    const handler = await loadServerEntry();
+    const serverHandler = await loadHandler();
 
-    const url = new URL(
-      req.url || "/",
-      `http://${req.headers.host || "localhost:3000"}`
-    );
+    // Build URL
+    const protocol = req.headers['x-forwarded-proto'] || 'http';
+    const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost';
+    const url = new URL(`${protocol}://${host}${req.url || '/'}`);
 
+    console.log('[Handler] Processing:', req.method, req.url);
+
+    // Create Request
     const request = new Request(url, {
-      method: req.method || "GET",
-      headers: new Headers(req.headers as Record<string, string | string[]>),
-      body:
-        req.method && ["GET", "HEAD"].includes(req.method)
-          ? undefined
-          : typeof req.body === "string"
+      method: req.method || 'GET',
+      headers: new Headers(
+        Object.fromEntries(
+          Object.entries(req.headers).map(([k, v]: [string, any]) => [
+            k,
+            typeof v === 'string' ? v : Array.isArray(v) ? v.join(', ') : String(v),
+          ])
+        )
+      ),
+      body: ['GET', 'HEAD'].includes(req.method || 'GET')
+        ? undefined
+        : req.body
+          ? typeof req.body === 'string'
             ? req.body
-            : JSON.stringify(req.body || {}),
+            : JSON.stringify(req.body)
+          : undefined,
     });
 
-    const response = await handler.fetch(request, {}, {});
+    // Call handler
+    const response = await serverHandler.fetch(request, {}, {});
 
-    // Set status
+    // Send response
     res.status(response.status);
-
-    // Set headers
-    response.headers.forEach((value, key) => {
-      if (key.toLowerCase() !== "content-encoding") {
-        res.setHeader(key, value);
-      }
+    response.headers.forEach((value: string, key: string) => {
+      res.setHeader(key, value);
     });
 
-    // Stream the response
-    const buffer = await response.arrayBuffer();
-    res.send(Buffer.from(buffer));
+    const body = await response.arrayBuffer();
+    res.send(Buffer.from(body));
   } catch (error) {
-    console.error("API Error:", error);
+    console.error('[Handler] Error:', error);
     res.status(500).json({
-      error: "Internal Server Error",
+      error: 'Internal Server Error',
       message: error instanceof Error ? error.message : String(error),
     });
   }
