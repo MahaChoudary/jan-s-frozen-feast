@@ -1,93 +1,134 @@
-// Vercel Serverless Function Handler
-let serverHandler: any;
+import { readFileSync, existsSync } from "fs";
+import { join } from "path";
 
-async function loadHandler() {
-  if (serverHandler) return serverHandler;
+const distClientPath = join(process.cwd(), "dist/client");
+const distServerPath = join(process.cwd(), "dist/server/index.js");
 
+let indexHtml = "";
+let serverHandler: any = null;
+
+// Initialize at startup
+async function initialize() {
+  // Load index.html
   try {
-    console.log('[Server] Loading handler...');
-    console.log('[Server] CWD:', process.cwd());
-
-    // Try to load from built dist
-    try {
-      // @ts-expect-error - dist folder created at build time
-      const handler = await import('./dist/server/index.js');
-      serverHandler = handler.default;
-      console.log('[Server] Loaded from relative dist/server/index.js');
-      return serverHandler;
-    } catch (e) {
-      console.log('[Server] Failed to load from relative path:', e);
+    const indexPath = join(distClientPath, "index.html");
+    if (existsSync(indexPath)) {
+      indexHtml = readFileSync(indexPath, "utf-8");
+      console.log("[Init] ✓ Loaded index.html");
     }
+  } catch (e) {
+    console.error("[Init] Failed to read index.html:", e);
+  }
 
-    // Fallback: load from absolute path that Vercel uses
-    try {
-      // @ts-expect-error - dist folder created at build time
-      const handler = await import('/var/task/dist/server/index.js');
-      serverHandler = handler.default;
-      console.log('[Server] Loaded from /var/task/dist/server/index.js');
-      return serverHandler;
-    } catch (e) {
-      console.log('[Server] Failed to load from /var/task:', e);
+  // Load server handler
+  try {
+    if (existsSync(distServerPath)) {
+      const mod = await import(distServerPath);
+      serverHandler = mod.default;
+      console.log("[Init] ✓ Loaded server handler from dist/server/index.js");
     }
-
-    // Final fallback: load from built-in TanStack
-    const handler = await import('@tanstack/react-start/server-entry');
-    serverHandler = handler.default || handler;
-    console.log('[Server] Loaded from @tanstack/react-start');
-    return serverHandler;
-  } catch (error) {
-    console.error('[Server] All import attempts failed:', error);
-    throw error;
+  } catch (e) {
+    console.warn("[Init] Could not load server handler - will use static mode:", e);
   }
 }
 
+// Initialize on first run
+let initialized = false;
+
 export default async function handler(req: any, res: any) {
   try {
-    const serverHandler = await loadHandler();
+    // Initialize once
+    if (!initialized) {
+      await initialize();
+      initialized = true;
+    }
 
-    // Build URL
-    const protocol = req.headers['x-forwarded-proto'] || 'http';
-    const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost';
-    const url = new URL(`${protocol}://${host}${req.url || '/'}`);
+    const path = req.url || "/";
+    const method = req.method || "GET";
 
-    console.log('[Handler] Processing:', req.method, req.url);
+    console.log(`[${method}] ${path}`);
 
-    // Create Request
-    const request = new Request(url, {
-      method: req.method || 'GET',
-      headers: new Headers(
-        Object.fromEntries(
-          Object.entries(req.headers).map(([k, v]: [string, any]) => [
-            k,
-            typeof v === 'string' ? v : Array.isArray(v) ? v.join(', ') : String(v),
-          ])
-        )
-      ),
-      body: ['GET', 'HEAD'].includes(req.method || 'GET')
-        ? undefined
-        : req.body
-          ? typeof req.body === 'string'
-            ? req.body
-            : JSON.stringify(req.body)
-          : undefined,
-    });
+    // Serve static assets
+    if (path.startsWith("/assets/")) {
+      const filePath = join(distClientPath, path);
+      try {
+        const content = readFileSync(filePath);
 
-    // Call handler
-    const response = await serverHandler.fetch(request, {}, {});
+        if (path.endsWith(".js")) {
+          res.setHeader("Content-Type", "application/javascript");
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        } else if (path.endsWith(".css")) {
+          res.setHeader("Content-Type", "text/css");
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        } else if (path.endsWith(".png")) {
+          res.setHeader("Content-Type", "image/png");
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        } else if (path.endsWith(".jpg") || path.endsWith(".jpeg")) {
+          res.setHeader("Content-Type", "image/jpeg");
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        }
 
-    // Send response
-    res.status(response.status);
-    response.headers.forEach((value: string, key: string) => {
-      res.setHeader(key, value);
-    });
+        res.status(200).send(content);
+        return;
+      } catch (e) {
+        console.error("Failed to serve:", path, e);
+      }
+    }
 
-    const body = await response.arrayBuffer();
-    res.send(Buffer.from(body));
+    // Try server handler first (for API routes and SSR)
+    if (serverHandler) {
+      try {
+        const url = new URL(
+          `${req.headers["x-forwarded-proto"] || "http"}://${req.headers["x-forwarded-host"] || req.headers.host || "localhost"}${path}`
+        );
+
+        const request = new Request(url, {
+          method,
+          headers: new Headers(
+            Object.fromEntries(
+              Object.entries(req.headers).map(([k, v]: [string, any]) => [
+                k,
+                typeof v === "string" ? v : Array.isArray(v) ? v.join(", ") : String(v),
+              ])
+            )
+          ),
+          body: ["GET", "HEAD"].includes(method)
+            ? undefined
+            : req.body
+              ? typeof req.body === "string"
+                ? req.body
+                : JSON.stringify(req.body)
+              : undefined,
+        });
+
+        const response = await serverHandler.fetch(request, {}, {});
+
+        res.status(response.status);
+        response.headers.forEach((value: string, key: string) => {
+          res.setHeader(key, value);
+        });
+
+        const body = await response.arrayBuffer();
+        res.send(Buffer.from(body));
+        return;
+      } catch (e) {
+        console.error("[Server] Error:", e);
+        // Fall through to static mode
+      }
+    }
+
+    // Fallback: serve index.html for client-side routing
+    if (indexHtml) {
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.status(200).send(indexHtml);
+    } else {
+      res.status(500).json({ error: "Could not load application" });
+    }
   } catch (error) {
-    console.error('[Handler] Error:', error);
+    console.error("[Handler] Fatal error:", error);
     res.status(500).json({
-      error: 'Internal Server Error',
-      message: error instanceof Error ? error.message : String(error),
+      error: "Internal Server Error",
+      message: error instanceof Error ? error.message : "Unknown error",
     });
   }
 }
