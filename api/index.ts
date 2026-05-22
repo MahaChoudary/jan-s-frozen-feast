@@ -1,12 +1,36 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
+import path from "path";
 
 let serverEntry: any;
 
 async function loadServerEntry() {
   if (serverEntry) return serverEntry;
   try {
-    serverEntry = (await import("../dist/server/index.js")).default;
-    return serverEntry;
+    // Try multiple possible paths for the server entry
+    const possiblePaths = [
+      "../dist/server/index.js",
+      "./dist/server/index.js",
+      "/var/task/dist/server/index.js",
+      path.join(process.cwd(), "dist/server/index.js"),
+    ];
+
+    let entry;
+    let lastError: Error | null = null;
+
+    for (const tryPath of possiblePaths) {
+      try {
+        console.log(`[Server] Trying to load from: ${tryPath}`);
+        entry = await import(tryPath);
+        serverEntry = entry.default || entry;
+        console.log(`[Server] Successfully loaded from: ${tryPath}`);
+        return serverEntry;
+      } catch (e) {
+        lastError = e as Error;
+        console.log(`[Server] Failed to load from ${tryPath}: ${(e as Error).message}`);
+      }
+    }
+
+    throw new Error(`Could not load server entry from any path. Last error: ${lastError?.message}`);
   } catch (e) {
     console.error("Failed to load server entry:", e);
     throw e;
