@@ -2,133 +2,93 @@ import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 
 const distClientPath = join(process.cwd(), "dist/client");
-const distServerPath = join(process.cwd(), "dist/server/index.js");
 
+// Cache index.html
 let indexHtml = "";
-let serverHandler: any = null;
+let initialized = false;
 
-// Initialize at startup
-async function initialize() {
-  // Load index.html
+function initialize() {
+  if (initialized) return;
+
   try {
     const indexPath = join(distClientPath, "index.html");
     if (existsSync(indexPath)) {
       indexHtml = readFileSync(indexPath, "utf-8");
-      console.log("[Init] ✓ Loaded index.html");
+      console.log("[Init] ✓ Loaded index.html from dist/client");
+    } else {
+      console.error("[Init] index.html not found at:", indexPath);
     }
   } catch (e) {
-    console.error("[Init] Failed to read index.html:", e);
+    console.error("[Init] Error:", e);
   }
 
-  // Load server handler
-  try {
-    if (existsSync(distServerPath)) {
-      const mod = await import(distServerPath);
-      serverHandler = mod.default;
-      console.log("[Init] ✓ Loaded server handler from dist/server/index.js");
-    }
-  } catch (e) {
-    console.warn("[Init] Could not load server handler - will use static mode:", e);
-  }
+  initialized = true;
 }
 
-// Initialize on first run
-let initialized = false;
-
-export default async function handler(req: any, res: any) {
+export default function handler(req: any, res: any) {
   try {
-    // Initialize once
-    if (!initialized) {
-      await initialize();
-      initialized = true;
-    }
+    // Initialize on first request
+    initialize();
 
-    const path = req.url || "/";
-    const method = req.method || "GET";
+    const urlPath = req.url || "/";
+    console.log(`[${req.method}] ${urlPath}`);
 
-    console.log(`[${method}] ${path}`);
-
-    // Serve static assets
-    if (path.startsWith("/assets/")) {
-      const filePath = join(distClientPath, path);
+    // Serve static assets with caching headers
+    if (urlPath.startsWith("/assets/")) {
       try {
+        const filePath = join(distClientPath, urlPath);
         const content = readFileSync(filePath);
 
-        if (path.endsWith(".js")) {
-          res.setHeader("Content-Type", "application/javascript");
+        // Set content type and cache headers
+        if (urlPath.endsWith(".js")) {
+          res.setHeader("Content-Type", "application/javascript; charset=utf-8");
           res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-        } else if (path.endsWith(".css")) {
-          res.setHeader("Content-Type", "text/css");
+        } else if (urlPath.endsWith(".css")) {
+          res.setHeader("Content-Type", "text/css; charset=utf-8");
           res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-        } else if (path.endsWith(".png")) {
+        } else if (urlPath.endsWith(".png")) {
           res.setHeader("Content-Type", "image/png");
           res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-        } else if (path.endsWith(".jpg") || path.endsWith(".jpeg")) {
+        } else if (urlPath.endsWith(".jpg") || urlPath.endsWith(".jpeg")) {
           res.setHeader("Content-Type", "image/jpeg");
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        } else if (urlPath.endsWith(".svg")) {
+          res.setHeader("Content-Type", "image/svg+xml");
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        } else if (urlPath.endsWith(".woff2")) {
+          res.setHeader("Content-Type", "font/woff2");
           res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
         }
 
-        res.status(200).send(content);
+        res.writeHead(200);
+        res.end(content);
         return;
-      } catch (e) {
-        console.error("Failed to serve:", path, e);
+      } catch (e: any) {
+        console.log(`[Assets] Not found: ${urlPath}`);
+        // Continue to serve index.html
       }
     }
 
-    // Try server handler first (for API routes and SSR)
-    if (serverHandler) {
-      try {
-        const url = new URL(
-          `${req.headers["x-forwarded-proto"] || "http"}://${req.headers["x-forwarded-host"] || req.headers.host || "localhost"}${path}`
-        );
-
-        const request = new Request(url, {
-          method,
-          headers: new Headers(
-            Object.fromEntries(
-              Object.entries(req.headers).map(([k, v]: [string, any]) => [
-                k,
-                typeof v === "string" ? v : Array.isArray(v) ? v.join(", ") : String(v),
-              ])
-            )
-          ),
-          body: ["GET", "HEAD"].includes(method)
-            ? undefined
-            : req.body
-              ? typeof req.body === "string"
-                ? req.body
-                : JSON.stringify(req.body)
-              : undefined,
-        });
-
-        const response = await serverHandler.fetch(request, {}, {});
-
-        res.status(response.status);
-        response.headers.forEach((value: string, key: string) => {
-          res.setHeader(key, value);
-        });
-
-        const body = await response.arrayBuffer();
-        res.send(Buffer.from(body));
-        return;
-      } catch (e) {
-        console.error("[Server] Error:", e);
-        // Fall through to static mode
-      }
+    // Serve index.html for all other routes (client-side routing)
+    if (!indexHtml) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Application not ready" }));
+      return;
     }
 
-    // Fallback: serve index.html for client-side routing
-    if (indexHtml) {
-      res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.status(200).send(indexHtml);
-    } else {
-      res.status(500).json({ error: "Could not load application" });
-    }
-  } catch (error) {
-    console.error("[Handler] Fatal error:", error);
-    res.status(500).json({
-      error: "Internal Server Error",
-      message: error instanceof Error ? error.message : "Unknown error",
+    res.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "public, max-age=0, must-revalidate",
     });
+    res.end(indexHtml);
+  } catch (error: any) {
+    console.error("[Handler] Error:", error?.message || error);
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        error: "Internal Server Error",
+        message: error?.message || "Unknown error",
+      })
+    );
   }
 }
