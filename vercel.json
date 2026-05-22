@@ -2,10 +2,16 @@
   "buildCommand": "npm run build",
   "installCommand": "npm install",
   "framework": null,
+  "public": "dist/client",
+  "cleanUrls": true,
   "rewrites": [
     {
+      "source": "/api/:path*",
+      "destination": "/api/:path*"
+    },
+    {
       "source": "/(.*)",
-      "destination": "/api"
+      "destination": "/index.html"
     }
   ]
 }

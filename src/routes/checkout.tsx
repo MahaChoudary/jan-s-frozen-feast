@@ -3,8 +3,6 @@ import { useState } from "react";
 import { useCart } from "@/store/cart";
 import { formatPKR } from "@/lib/brand";
 import { CheckCircle2, Lock, Truck } from "lucide-react";
-import { useServerFn } from "@tanstack/react-start";
-import { submitOrder } from "@/lib/order.functions";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/checkout")({
@@ -15,7 +13,6 @@ export const Route = createFileRoute("/checkout")({
 function CheckoutPage() {
   const { items, subtotal, clear } = useCart();
   const navigate = useNavigate();
-  const place = useServerFn(submitOrder);
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState<{ orderId: string } | null>(null);
 
@@ -52,14 +49,22 @@ function CheckoutPage() {
     e.preventDefault();
     setLoading(true);
     try {
-      const res = await place({
-        data: {
+      const response = await fetch("/api/send-order", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
           customer: form,
           items: items.map((i) => ({ id: i.id, name: i.name, qty: i.qty, price: i.price, discount: i.discount })),
           subtotal: sub,
           total,
-        },
+        }),
       });
+
+      if (!response.ok) {
+        throw new Error("Failed to place order");
+      }
+
+      const res = await response.json();
       toast.success("Order placed! We'll be in touch shortly.");
       clear();
       setDone({ orderId: res.orderId });
@@ -69,7 +74,6 @@ function CheckoutPage() {
       toast.error("Could not place order. Please try again or contact us on WhatsApp.");
     } finally {
       setLoading(false);
-      void navigate;
     }
   };
 
