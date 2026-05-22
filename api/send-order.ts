@@ -1,13 +1,4 @@
-interface VercelRequest {
-  method?: string;
-  body?: any;
-}
-
-interface VercelResponse {
-  status(code: number): VercelResponse;
-  json(data: any): void;
-  setHeader?(key: string, value: string): void;
-}
+import type { VercelRequest, VercelResponse } from "@vercel/node";
 
 interface OrderData {
   customer: {
@@ -29,7 +20,7 @@ interface OrderData {
   total: number;
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
@@ -38,17 +29,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const data: OrderData = req.body;
 
-    // Validate
     if (!data.customer || !data.items || data.items.length === 0) {
       res.status(400).json({ error: "Invalid order data" });
       return;
     }
 
-    // Generate order ID
     const orderId = `JFF-${Date.now().toString(36).toUpperCase()}`;
     const timestamp = new Date().toISOString();
 
-    // Build email content
     const itemsBlock = data.items
       .map((i) => {
         const eff = i.discount ? i.price * (1 - i.discount / 100) : i.price;
@@ -77,33 +65,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .filter(Boolean)
       .join("\n");
 
-    // Send email if configured
     const resendKey = process.env.RESEND_API_KEY;
     const companyEmail = process.env.COMPANY_EMAIL || "orders@jansfrozenfood.com";
 
     if (resendKey) {
-      try {
-        await fetch("https://api.resend.com/emails", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${resendKey}`,
-          },
-          body: JSON.stringify({
-            from: "JAN'S Frozen Food <onboarding@resend.dev>",
-            to: [companyEmail],
-            subject: `New Order ${orderId} — ${data.customer.name}`,
-            text: emailBody,
-          }),
-        });
-      } catch (e) {
-        console.error("Email send failed:", e);
-      }
+      fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${resendKey}`,
+        },
+        body: JSON.stringify({
+          from: "JAN'S Frozen Food <onboarding@resend.dev>",
+          to: [companyEmail],
+          subject: `New Order ${orderId} — ${data.customer.name}`,
+          text: emailBody,
+        }),
+      }).catch((e) => console.error("Email send failed:", e));
     } else {
       console.log("[ORDER]", emailBody);
     }
 
-    // Return success with order ID
     res.status(200).json({
       ok: true,
       orderId,
