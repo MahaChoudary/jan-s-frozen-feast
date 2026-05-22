@@ -1,15 +1,5 @@
 {
   "buildCommand": "npm run build",
   "installCommand": "npm install",
-  "nodeVersion": "20.x",
-  "framework": null,
-  "env": {
-    "NODE_ENV": "production"
-  },
-  "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "/api"
-    }
-  ]
+  "framework": null
 }
