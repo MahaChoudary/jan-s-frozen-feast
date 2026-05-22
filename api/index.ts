@@ -1,94 +1,72 @@
-import { readFileSync, existsSync } from "fs";
-import { join } from "path";
+// Route all requests through the TanStack Start server entry
+let serverHandler: any;
 
-const distClientPath = join(process.cwd(), "dist/client");
-
-// Cache index.html
-let indexHtml = "";
-let initialized = false;
-
-function initialize() {
-  if (initialized) return;
+async function getServerHandler() {
+  if (serverHandler) return serverHandler;
 
   try {
-    const indexPath = join(distClientPath, "index.html");
-    if (existsSync(indexPath)) {
-      indexHtml = readFileSync(indexPath, "utf-8");
-      console.log("[Init] ✓ Loaded index.html from dist/client");
-    } else {
-      console.error("[Init] index.html not found at:", indexPath);
-    }
-  } catch (e) {
-    console.error("[Init] Error:", e);
+    // Import the server entry - this handles everything (static + dynamic)
+    // @ts-expect-error - built at runtime
+    const mod = await import("../dist/server/index.js");
+    serverHandler = mod.default;
+    console.log("[Server] ✓ Loaded TanStack Start server entry");
+    return serverHandler;
+  } catch (error) {
+    console.error("[Server] ✗ Failed to load server entry:", error);
+    throw error;
   }
-
-  initialized = true;
 }
 
-export default function handler(req: any, res: any) {
+export default async function handler(req: any, res: any) {
   try {
-    // Initialize on first request
-    initialize();
+    const serverHandler = await getServerHandler();
 
-    const urlPath = req.url || "/";
-    console.log(`[${req.method}] ${urlPath}`);
+    // Build the full URL
+    const protocol = req.headers["x-forwarded-proto"] || "http";
+    const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost";
+    const url = new URL(`${protocol}://${host}${req.url || "/"}`);
 
-    // Serve static assets with caching headers
-    if (urlPath.startsWith("/assets/")) {
-      try {
-        const filePath = join(distClientPath, urlPath);
-        const content = readFileSync(filePath);
+    console.log(`[${req.method}] ${req.url}`);
 
-        // Set content type and cache headers
-        if (urlPath.endsWith(".js")) {
-          res.setHeader("Content-Type", "application/javascript; charset=utf-8");
-          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-        } else if (urlPath.endsWith(".css")) {
-          res.setHeader("Content-Type", "text/css; charset=utf-8");
-          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-        } else if (urlPath.endsWith(".png")) {
-          res.setHeader("Content-Type", "image/png");
-          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-        } else if (urlPath.endsWith(".jpg") || urlPath.endsWith(".jpeg")) {
-          res.setHeader("Content-Type", "image/jpeg");
-          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-        } else if (urlPath.endsWith(".svg")) {
-          res.setHeader("Content-Type", "image/svg+xml");
-          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-        } else if (urlPath.endsWith(".woff2")) {
-          res.setHeader("Content-Type", "font/woff2");
-          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-        }
-
-        res.writeHead(200);
-        res.end(content);
-        return;
-      } catch (e: any) {
-        console.log(`[Assets] Not found: ${urlPath}`);
-        // Continue to serve index.html
-      }
-    }
-
-    // Serve index.html for all other routes (client-side routing)
-    if (!indexHtml) {
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Application not ready" }));
-      return;
-    }
-
-    res.writeHead(200, {
-      "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "public, max-age=0, must-revalidate",
+    // Create a Web standard Request
+    const request = new Request(url, {
+      method: req.method || "GET",
+      headers: new Headers(
+        Object.fromEntries(
+          Object.entries(req.headers).map(([key, value]: [string, any]) => [
+            key,
+            typeof value === "string" ? value : Array.isArray(value) ? value.join(", ") : String(value),
+          ])
+        )
+      ),
+      body: ["GET", "HEAD"].includes(req.method || "GET")
+        ? undefined
+        : req.body
+          ? typeof req.body === "string"
+            ? req.body
+            : JSON.stringify(req.body)
+          : undefined,
     });
-    res.end(indexHtml);
-  } catch (error: any) {
-    console.error("[Handler] Error:", error?.message || error);
-    res.writeHead(500, { "Content-Type": "application/json" });
-    res.end(
-      JSON.stringify({
-        error: "Internal Server Error",
-        message: error?.message || "Unknown error",
-      })
-    );
+
+    // Call the server handler (handles all routing)
+    const response = await serverHandler.fetch(request, {}, {});
+
+    // Send response
+    res.status(response.status);
+
+    // Copy all headers
+    response.headers.forEach((value: string, key: string) => {
+      res.setHeader(key, value);
+    });
+
+    // Send body
+    const body = await response.arrayBuffer();
+    res.send(Buffer.from(body));
+  } catch (error) {
+    console.error("[API] Error:", error);
+    res.status(500).json({
+      error: "Internal Server Error",
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
   }
 }
